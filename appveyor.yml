@@ -1,10 +1,27 @@
 version: "{build}"
+
 configuration: Release
 platform: win64
+
 build:
   project: nssm.sln
   verbosity: minimal
+
 test: off
+
+deploy:
+  release: nssm-$(APPVEYOR_REPO_TAG_NAME).$(APPVEYOR_BUILD_NUMBER)
+  description: 'NSSM $(APPVEYOR_REPO_TAG_NAME) for PLOSSYS'
+  provider: GitHub
+  auth_token:
+    secure: QFcvy7cfnZDYHc+7s1hWpvsNSyYQeQL2RNpD6O7jUbwGo0UGyX3fN5SbBnpsRAi3 # your encrypted token from GitHub
+  artifact: out/Release/win64/nssm.exe # upload nssm.exe to release assets
+  draft: false
+  prerelease: false
+  on:
+    branch: master                 # release from master branch only
+    appveyor_repo_tag: true        # deploy on tag push only
+
 artifacts:
 - path: out/Release/win64/nssm.exe
   name: Release
