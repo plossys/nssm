@@ -10,7 +10,7 @@ build:
 test: off
 
 deploy:
-  release: nssm-$(APPVEYOR_REPO_TAG_NAME).$(APPVEYOR_BUILD_NUMBER)
+  release: $(APPVEYOR_REPO_TAG_NAME).$(APPVEYOR_BUILD_NUMBER)
   description: 'NSSM $(APPVEYOR_REPO_TAG_NAME) for PLOSSYS'
   provider: GitHub
   auth_token:
