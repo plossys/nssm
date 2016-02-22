@@ -1,5 +1,4 @@
-# NSSM [![Build status](https://ci.appveyor.com/api/projects/status/otln18ho36fj15as/branch/master?svg=true)](https://ci.appveyor.com/project/Plossys/nssm/branch/master) 
-[![GitHub release](https://img.shields.io/github/release/plossys/nssm.svg)]()
+# NSSM [![Build status](https://ci.appveyor.com/api/projects/status/otln18ho36fj15as/branch/master?svg=true)](https://ci.appveyor.com/project/Plossys/nssm/branch/master) [![GitHub release](https://img.shields.io/github/release/plossys/nssm.svg)]()
 
 This is a "fork" of NSSM (http://nssm.cc) that uses AppVeyor to build new versions of the executable.
 
