@@ -1,0 +1,10 @@
+version: {build}
+configuration: Release
+platform: x64
+build:
+  project: nssm.sln
+  verbosity: minimal
+test: off
+artifacts:
+- path: x64/Release/nssm.exe
+  name: Release
