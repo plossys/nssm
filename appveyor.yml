@@ -1,6 +1,6 @@
 version: "{build}"
 configuration: Release
-platform: x64
+platform: win64
 build:
   project: nssm.sln
   verbosity: minimal
