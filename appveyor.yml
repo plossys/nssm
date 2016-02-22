@@ -1,6 +1,7 @@
 version: "{build}"
 configuration: Release
 platform: x64
+os: Visual Studio 2010
 build:
   project: nssm.sln
   verbosity: minimal
