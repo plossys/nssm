@@ -6,7 +6,7 @@ build:
   verbosity: minimal
 test: off
 artifacts:
-- path: Release/win64/nssm.exe
+- path: out/Release/win64/nssm.exe
   name: Release
 
 # Uncomment to debug via RDP
