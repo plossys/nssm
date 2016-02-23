@@ -38,9 +38,13 @@ call set year=%%BUILD_ID:%md%=%%
 set year=%year:~0,-1%
 if "%BUILD_ID%" == "" set year=
 
-@rem Appveyor: Set build number and date
-if defined APPVEYOR set BUILD_NUMBER=%APPVEYOR_BUILD_NUMBER%
-if defined APPVEYOR set year=%date:~10,4%
+@rem Appveyor: Set version and date
+if defined APPVEYOR (
+  set n=%APPVAYOR_TAG_NAME:*.=%
+  set n=%n:*.=%
+  set BUILD_NUMBER=%APPVEYOR_BUILD_NUMBER%
+  set year=%date:~10,4%
+)
 
 @rem Create version.h.
 @echo>version.h.new #define NSSM_VERSION _T("%description%")
