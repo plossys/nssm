@@ -41,7 +41,9 @@ if "%BUILD_ID%" == "" set year=
 @rem Appveyor: Set version and date
 if defined APPVEYOR (
   set n=%APPVEYOR_REPO_TAG_NAME:*.=%
+  @echo "n: %n%"
   set n=%n:*.=%
+  @echo "n2: %n%"
   set BUILD_NUMBER=%APPVEYOR_BUILD_NUMBER%
   set year=%date:~10,4%
 )
