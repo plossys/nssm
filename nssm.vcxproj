@@ -288,6 +288,7 @@
     <ClCompile Include="registry.cpp" />
     <ClCompile Include="service.cpp" />
     <ClCompile Include="settings.cpp" />
+    <ClCompile Include="utf8.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="account.h" />
@@ -303,6 +304,7 @@
     <ClInclude Include="registry.h" />
     <ClInclude Include="service.h" />
     <ClInclude Include="settings.h" />
+    <ClInclude Include="utf8.h" />
   </ItemGroup>
   <ItemGroup>
     <Image Include="nssm.ico" />
