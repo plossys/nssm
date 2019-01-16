@@ -33,13 +33,20 @@
 #define DIR_LENGTH PATH_LENGTH - 12
 
 #define _WIN32_WINNT 0x0500
+
+#define APSTUDIO_HIDDEN_SYMBOLS
+#include <windows.h>
+#include <prsht.h>
+#undef APSTUDIO_HIDDEN_SYMBOLS
+#include <commctrl.h>
+#include <tchar.h>
+#ifndef NSSM_COMPILE_RC
 #include <fcntl.h>
 #include <io.h>
 #include <shlwapi.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <tchar.h>
-#include <windows.h>
+#include "utf8.h"
 #include "service.h"
 #include "account.h"
 #include "console.h"
@@ -53,8 +60,11 @@
 #include "settings.h"
 #include "io.h"
 #include "gui.h"
+#endif
 
+void nssm_exit(int);
 int str_equiv(const TCHAR *, const TCHAR *);
+int quote(const TCHAR *, TCHAR *, size_t);
 void strip_basename(TCHAR *);
 int str_number(const TCHAR *, unsigned long *, TCHAR **);
 int str_number(const TCHAR *, unsigned long *);
@@ -62,6 +72,7 @@ int num_cpus();
 int usage(int);
 const TCHAR *nssm_unquoted_imagepath();
 const TCHAR *nssm_imagepath();
+const TCHAR *nssm_exe();
 
 #define NSSM _T("NSSM")
 #ifdef _WIN64
@@ -144,5 +155,8 @@ const TCHAR *nssm_imagepath();
 
 /* How many milliseconds to wait for outstanding hooks. */
 #define NSSM_HOOK_THREAD_DEADLINE 80000
+
+/* How many milliseconds to wait for closing logging thread. */
+#define NSSM_CLEANUP_LOGGERS_DEADLINE 1500
 
 #endif

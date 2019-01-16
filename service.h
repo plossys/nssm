@@ -61,6 +61,8 @@ typedef struct {
   unsigned long stdout_sharing;
   unsigned long stdout_disposition;
   unsigned long stdout_flags;
+  bool use_stdout_pipe;
+  HANDLE stdout_si;
   HANDLE stdout_pipe;
   HANDLE stdout_thread;
   unsigned long stdout_tid;
@@ -68,10 +70,14 @@ typedef struct {
   unsigned long stderr_sharing;
   unsigned long stderr_disposition;
   unsigned long stderr_flags;
+  bool use_stderr_pipe;
+  HANDLE stderr_si;
   HANDLE stderr_pipe;
   HANDLE stderr_thread;
   unsigned long stderr_tid;
+  bool hook_share_output_handles;
   bool rotate_files;
+  bool timestamp_log;
   bool stdout_copy_and_truncate;
   bool stderr_copy_and_truncate;
   unsigned long rotate_stdout_online;
@@ -133,6 +139,8 @@ void cleanup_nssm_service(nssm_service_t *);
 SC_HANDLE open_service_manager(unsigned long);
 SC_HANDLE open_service(SC_HANDLE, TCHAR *, unsigned long, TCHAR *, unsigned long);
 QUERY_SERVICE_CONFIG *query_service_config(const TCHAR *, SC_HANDLE);
+int append_to_dependencies(TCHAR *, unsigned long, TCHAR *, TCHAR **, unsigned long *, int);
+int remove_from_dependencies(TCHAR *, unsigned long, TCHAR *, TCHAR **, unsigned long *, int);
 int set_service_dependencies(const TCHAR *, SC_HANDLE, TCHAR *);
 int get_service_dependencies(const TCHAR *, SC_HANDLE, TCHAR **, unsigned long *, int);
 int get_service_dependencies(const TCHAR *, SC_HANDLE, TCHAR **, unsigned long *);
@@ -148,6 +156,7 @@ int pre_edit_service(int, TCHAR **);
 int install_service(nssm_service_t *);
 int remove_service(nssm_service_t *);
 int edit_service(nssm_service_t *, bool);
+int control_service(unsigned long, int, TCHAR **, bool);
 int control_service(unsigned long, int, TCHAR **);
 void set_service_recovery(nssm_service_t *);
 int monitor_service(nssm_service_t *);
@@ -156,5 +165,7 @@ int stop_service(nssm_service_t *, unsigned long, bool, bool);
 void CALLBACK end_service(void *, unsigned char);
 void throttle_restart(nssm_service_t *);
 int await_single_handle(SERVICE_STATUS_HANDLE, SERVICE_STATUS *, HANDLE, TCHAR *, TCHAR *, unsigned long);
+int list_nssm_services(int, TCHAR **);
+int service_process_tree(int, TCHAR **);
 
 #endif

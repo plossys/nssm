@@ -63,7 +63,7 @@
 				ProgramDataBaseFileName="$(IntDir)/"
 				WarningLevel="3"
 				SuppressStartupBanner="true"
-				DebugInformationFormat="4"
+				DebugInformationFormat="3"
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -78,7 +78,7 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="shlwapi.lib"
+				AdditionalDependencies="psapi.lib shlwapi.lib"
 				LinkIncremental="2"
 				SuppressStartupBanner="true"
 				GenerateDebugInformation="true"
@@ -173,7 +173,7 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="shlwapi.lib"
+				AdditionalDependencies="psapi.lib shlwapi.lib"
 				LinkIncremental="2"
 				SuppressStartupBanner="true"
 				GenerateDebugInformation="true"
@@ -253,6 +253,7 @@
 				ProgramDataBaseFileName="$(IntDir)/"
 				WarningLevel="3"
 				SuppressStartupBanner="true"
+				DebugInformationFormat="3"
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -267,11 +268,14 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="shlwapi.lib"
+				AdditionalDependencies="psapi.lib shlwapi.lib"
 				LinkIncremental="1"
 				SuppressStartupBanner="true"
+				GenerateDebugInformation="true"
 				ProgramDatabaseFile="$(OutDir)/$(ProjectName).pdb"
 				SubSystem="1"
+				OptimizeReferences="2"
+				EnableCOMDATFolding="2"
 				RandomizedBaseAddress="1"
 				DataExecutionPrevention="0"
 				TargetMachine="1"
@@ -347,6 +351,7 @@
 				ProgramDataBaseFileName="$(IntDir)/"
 				WarningLevel="3"
 				SuppressStartupBanner="true"
+				DebugInformationFormat="3"
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"
@@ -361,11 +366,14 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalDependencies="shlwapi.lib"
+				AdditionalDependencies="psapi.lib shlwapi.lib"
 				LinkIncremental="1"
 				SuppressStartupBanner="true"
+				GenerateDebugInformation="true"
 				ProgramDatabaseFile="$(OutDir)/$(ProjectName).pdb"
 				SubSystem="1"
+				OptimizeReferences="2"
+				EnableCOMDATFolding="2"
 				RandomizedBaseAddress="1"
 				DataExecutionPrevention="0"
 				TargetMachine="17"
@@ -646,6 +654,10 @@
 				RelativePath="settings.cpp"
 				>
 			</File>
+			<File
+				RelativePath="utf8.cpp"
+				>
+			</File>
 		</Filter>
 		<Filter
 			Name="Header Files"
@@ -703,6 +715,10 @@
 				RelativePath="settings.h"
 				>
 			</File>
+			<File
+				RelativePath="utf8.h"
+				>
+			</File>
 		</Filter>
 		<Filter
 			Name="Resource Files"
@@ -758,7 +774,7 @@
 				<Tool
 					Name="VCCustomBuildTool"
 					Description="Compiling messages"
-					CommandLine="mc -u -U $(InputName).mc -r . -h ."
+					CommandLine="mc -u -U $(InputName).mc -r . -h .&#x0D;&#x0A;"
 					Outputs="$(InputName).rc;$(InputName).h"
 				/>
 			</FileConfiguration>
@@ -768,7 +784,7 @@
 				<Tool
 					Name="VCCustomBuildTool"
 					Description="Compiling messages"
-					CommandLine="mc -u -U $(InputName).mc -r . -h ."
+					CommandLine="mc -u -U $(InputName).mc -r . -h .&#x0D;&#x0A;"
 					Outputs="$(InputName).rc;$(InputName).h"
 				/>
 			</FileConfiguration>
@@ -778,7 +794,7 @@
 				<Tool
 					Name="VCCustomBuildTool"
 					Description="Compiling messages"
-					CommandLine="mc -u -U $(InputName).mc -r . -h ."
+					CommandLine="mc -u -U $(InputName).mc -r . -h .&#x0D;&#x0A;"
 					AdditionalDependencies=""
 					Outputs="$(InputName).rc;$(InputName).h"
 				/>
@@ -789,7 +805,7 @@
 				<Tool
 					Name="VCCustomBuildTool"
 					Description="Compiling messages"
-					CommandLine="mc -u -U $(InputName).mc -r . -h ."
+					CommandLine="mc -u -U $(InputName).mc -r . -h .&#x0D;&#x0A;"
 					AdditionalDependencies=""
 					Outputs="$(InputName).rc;$(InputName).h"
 				/>

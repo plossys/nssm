@@ -6,6 +6,13 @@ extern imports_t imports;
 
 static TCHAR unquoted_imagepath[PATH_LENGTH];
 static TCHAR imagepath[PATH_LENGTH];
+static TCHAR imageargv0[PATH_LENGTH];
+
+void nssm_exit(int status) {
+  free_imports();
+  unsetup_utf8();
+  exit(status);
+}
 
 /* Are two strings case-insensitively equivalent? */
 int str_equiv(const TCHAR *a, const TCHAR *b) {
@@ -25,9 +32,133 @@ int str_number(const TCHAR *string, unsigned long *number, TCHAR **bogus) {
   return 0;
 }
 
+/* User requested us to print our version. */
+static bool is_version(const TCHAR *s) {
+  if (! s || ! *s) return false;
+  /* /version */
+  if (*s == '/') s++;
+  else if (*s == '-') {
+    /* -v, -V, -version, --version */
+    s++;
+    if (*s == '-') s++;
+    else if (str_equiv(s, _T("v"))) return true;
+  }
+  if (str_equiv(s, _T("version"))) return true;
+  return false;
+}
+
 int str_number(const TCHAR *string, unsigned long *number) {
   TCHAR *bogus;
   return str_number(string, number, &bogus);
+}
+
+/* Does a char need to be escaped? */
+static bool needs_escape(const TCHAR c) {
+  if (c == _T('"')) return true;
+  if (c == _T('&')) return true;
+  if (c == _T('%')) return true;
+  if (c == _T('^')) return true;
+  if (c == _T('<')) return true;
+  if (c == _T('>')) return true;
+  if (c == _T('|')) return true;
+  return false;
+}
+
+/* Does a char need to be quoted? */
+static bool needs_quote(const TCHAR c) {
+  if (c == _T(' ')) return true;
+  if (c == _T('\t')) return true;
+  if (c == _T('\n')) return true;
+  if (c == _T('\v')) return true;
+  if (c == _T('"')) return true;
+  if (c == _T('*')) return true;
+  return needs_escape(c);
+}
+
+/* https://blogs.msdn.microsoft.com/twistylittlepassagesallalike/2011/04/23/everyone-quotes-command-line-arguments-the-wrong-way/ */
+/* http://www.robvanderwoude.com/escapechars.php */
+int quote(const TCHAR *unquoted, TCHAR *buffer, size_t buflen) {
+  size_t i, j, n;
+  size_t len = _tcslen(unquoted);
+  if (len > buflen - 1) return 1;
+
+  bool escape = false;
+  bool quotes = false;
+
+  for (i = 0; i < len; i++) {
+    if (needs_escape(unquoted[i])) {
+      escape = quotes = true;
+      break;
+    }
+    if (needs_quote(unquoted[i])) quotes = true;
+  }
+  if (! quotes) {
+    memmove(buffer, unquoted, (len + 1) * sizeof(TCHAR));
+    return 0;
+  }
+
+  /* "" */
+  size_t quoted_len = 2;
+  if (escape) quoted_len += 2;
+  for (i = 0; ; i++) {
+    n = 0;
+
+    while (i != len && unquoted[i] == _T('\\')) {
+      i++;
+      n++;
+    }
+
+    if (i == len) {
+      quoted_len += n * 2;
+      break;
+    }
+    else if (unquoted[i] == _T('"')) quoted_len += n * 2 + 2;
+    else quoted_len += n + 1;
+    if (needs_escape(unquoted[i])) quoted_len += n;
+  }
+  if (quoted_len > buflen - 1) return 1;
+
+  TCHAR *s = buffer;
+  if (escape) *s++ = _T('^');
+  *s++ = _T('"');
+
+  for (i = 0; ; i++) {
+    n = 0;
+
+    while (i != len && unquoted[i] == _T('\\')) {
+      i++;
+      n++;
+    }
+
+    if (i == len) {
+      for (j = 0; j < n * 2; j++) {
+        if (escape) *s++ = _T('^');
+        *s++ = _T('\\');
+      }
+      break;
+    }
+    else if (unquoted[i] == _T('"')) {
+      for (j = 0; j < n * 2 + 1; j++) {
+        if (escape) *s++ = _T('^');
+        *s++ = _T('\\');
+      }
+      if (escape && needs_escape(unquoted[i])) *s++ = _T('^');
+      *s++ = unquoted[i];
+    }
+    else {
+      for (j = 0; j < n; j++) {
+        if (escape) *s++ = _T('^');
+        *s++ = _T('\\');
+      }
+      if (escape && needs_escape(unquoted[i])) *s++ = _T('^');
+      *s++ = unquoted[i];
+    }
+  }
+  if (escape) *s++ = _T('^');
+  *s++ = _T('"');
+  *s++ = _T('\0');
+
+  return 0;
 }
 
 /* Remove basename of a path. */
@@ -42,8 +173,8 @@ void strip_basename(TCHAR *buffer) {
 
 /* How to use me correctly */
 int usage(int ret) {
-  if (GetConsoleWindow()) print_message(stderr, NSSM_MESSAGE_USAGE, NSSM_VERSION, NSSM_CONFIGURATION, NSSM_DATE);
-  else popup_message(0, MB_OK, NSSM_MESSAGE_USAGE, NSSM_VERSION, NSSM_CONFIGURATION, NSSM_DATE);
+  if ((! GetConsoleWindow() || ! GetStdHandle(STD_OUTPUT_HANDLE)) && GetProcessWindowStation()) popup_message(0, MB_OK, NSSM_MESSAGE_USAGE, NSSM_VERSION, NSSM_CONFIGURATION, NSSM_DATE);
+  else print_message(stderr, NSSM_MESSAGE_USAGE, NSSM_VERSION, NSSM_CONFIGURATION, NSSM_DATE);
   return(ret);
 }
 
@@ -92,7 +223,7 @@ static int elevate(int argc, TCHAR **argv, unsigned long message) {
 int num_cpus() {
   DWORD_PTR i, affinity, system_affinity;
   if (! GetProcessAffinityMask(GetCurrentProcess(), &affinity, &system_affinity)) return 64;
-  for (i = 0; system_affinity & (1LL << i); i++);
+  for (i = 0; system_affinity & (1LL << i); i++) if (i == 64) break;
   return (int) i;
 }
 
@@ -104,25 +235,22 @@ const TCHAR *nssm_imagepath() {
   return imagepath;
 }
 
-int _tmain(int argc, TCHAR **argv) {
-  check_console();
+const TCHAR *nssm_exe() {
+  return imageargv0;
+}
 
-#ifdef UNICODE
-  /*
-    Ensure we write in UTF-16 mode, so that non-ASCII characters don't get
-    mangled.  If we were compiled in ANSI mode it won't work.
-   */
-  _setmode(_fileno(stdout), _O_U16TEXT);
-  _setmode(_fileno(stderr), _O_U16TEXT);
-#endif
+int _tmain(int argc, TCHAR **argv) {
+  if (check_console()) setup_utf8();
 
   /* Remember if we are admin */
   check_admin();
 
   /* Set up function pointers. */
-  if (get_imports()) exit(111);
+  if (get_imports()) nssm_exit(111);
 
   /* Remember our path for later. */
+  _sntprintf_s(imageargv0, _countof(imageargv0), _TRUNCATE, _T("%s"), argv[0]);
+  PathQuoteSpaces(imageargv0);
   GetModuleFileName(0, unquoted_imagepath, _countof(unquoted_imagepath));
   GetModuleFileName(0, imagepath, _countof(imagepath));
   PathQuoteSpaces(imagepath);
@@ -132,32 +260,41 @@ int _tmain(int argc, TCHAR **argv) {
     /*
       Valid commands are:
       start, stop, pause, continue, install, edit, get, set, reset, unset, remove
+      status, statuscode, rotate, list, processes, version
     */
-    if (str_equiv(argv[1], _T("start"))) exit(control_service(NSSM_SERVICE_CONTROL_START, argc - 2, argv + 2));
-    if (str_equiv(argv[1], _T("stop"))) exit(control_service(SERVICE_CONTROL_STOP, argc - 2, argv + 2));
+    if (is_version(argv[1])) {
+      _tprintf(_T("%s %s %s %s\n"), NSSM, NSSM_VERSION, NSSM_CONFIGURATION, NSSM_DATE);
+      nssm_exit(0);
+    }
+    if (str_equiv(argv[1], _T("start"))) nssm_exit(control_service(NSSM_SERVICE_CONTROL_START, argc - 2, argv + 2));
+    if (str_equiv(argv[1], _T("stop"))) nssm_exit(control_service(SERVICE_CONTROL_STOP, argc - 2, argv + 2));
     if (str_equiv(argv[1], _T("restart"))) {
       int ret = control_service(SERVICE_CONTROL_STOP, argc - 2, argv + 2);
-      if (ret) exit(ret);
-      exit(control_service(NSSM_SERVICE_CONTROL_START, argc - 2, argv + 2));
+      if (ret) nssm_exit(ret);
+      nssm_exit(control_service(NSSM_SERVICE_CONTROL_START, argc - 2, argv + 2));
     }
-    if (str_equiv(argv[1], _T("pause"))) exit(control_service(SERVICE_CONTROL_PAUSE, argc - 2, argv + 2));
-    if (str_equiv(argv[1], _T("continue"))) exit(control_service(SERVICE_CONTROL_CONTINUE, argc - 2, argv + 2));
-    if (str_equiv(argv[1], _T("status"))) exit(control_service(SERVICE_CONTROL_INTERROGATE, argc - 2, argv + 2));
-    if (str_equiv(argv[1], _T("rotate"))) exit(control_service(NSSM_SERVICE_CONTROL_ROTATE, argc - 2, argv + 2));
+    if (str_equiv(argv[1], _T("pause"))) nssm_exit(control_service(SERVICE_CONTROL_PAUSE, argc - 2, argv + 2));
+    if (str_equiv(argv[1], _T("continue"))) nssm_exit(control_service(SERVICE_CONTROL_CONTINUE, argc - 2, argv + 2));
+    if (str_equiv(argv[1], _T("status"))) nssm_exit(control_service(SERVICE_CONTROL_INTERROGATE, argc - 2, argv + 2));
+    if (str_equiv(argv[1], _T("statuscode"))) nssm_exit(control_service(SERVICE_CONTROL_INTERROGATE, argc - 2, argv + 2, true));
+    if (str_equiv(argv[1], _T("rotate"))) nssm_exit(control_service(NSSM_SERVICE_CONTROL_ROTATE, argc - 2, argv + 2));
     if (str_equiv(argv[1], _T("install"))) {
-      if (! is_admin) exit(elevate(argc, argv, NSSM_MESSAGE_NOT_ADMINISTRATOR_CANNOT_INSTALL));
-      exit(pre_install_service(argc - 2, argv + 2));
+      if (! is_admin) nssm_exit(elevate(argc, argv, NSSM_MESSAGE_NOT_ADMINISTRATOR_CANNOT_INSTALL));
+      create_messages();
+      nssm_exit(pre_install_service(argc - 2, argv + 2));
     }
-    if (str_equiv(argv[1], _T("edit")) || str_equiv(argv[1], _T("get")) || str_equiv(argv[1], _T("set")) || str_equiv(argv[1], _T("reset")) || str_equiv(argv[1], _T("unset"))) {
+    if (str_equiv(argv[1], _T("edit")) || str_equiv(argv[1], _T("get")) || str_equiv(argv[1], _T("set")) || str_equiv(argv[1], _T("reset")) || str_equiv(argv[1], _T("unset")) || str_equiv(argv[1], _T("dump"))) {
       int ret = pre_edit_service(argc - 1, argv + 1);
-      if (ret == 3 && ! is_admin && argc == 3) exit(elevate(argc, argv, NSSM_MESSAGE_NOT_ADMINISTRATOR_CANNOT_EDIT));
+      if (ret == 3 && ! is_admin && argc == 3) nssm_exit(elevate(argc, argv, NSSM_MESSAGE_NOT_ADMINISTRATOR_CANNOT_EDIT));
       /* There might be a password here. */
       for (int i = 0; i < argc; i++) SecureZeroMemory(argv[i], _tcslen(argv[i]) * sizeof(TCHAR));
-      exit(ret);
+      nssm_exit(ret);
     }
+    if (str_equiv(argv[1], _T("list"))) nssm_exit(list_nssm_services(argc - 2, argv + 2));
+    if (str_equiv(argv[1], _T("processes"))) nssm_exit(service_process_tree(argc - 2, argv + 2));
     if (str_equiv(argv[1], _T("remove"))) {
-      if (! is_admin) exit(elevate(argc, argv, NSSM_MESSAGE_NOT_ADMINISTRATOR_CANNOT_REMOVE));
-      exit(pre_remove_service(argc - 2, argv + 2));
+      if (! is_admin) nssm_exit(elevate(argc, argv, NSSM_MESSAGE_NOT_ADMINISTRATOR_CANNOT_REMOVE));
+      nssm_exit(pre_remove_service(argc - 2, argv + 2));
     }
   }
 
@@ -183,14 +320,13 @@ int _tmain(int argc, TCHAR **argv) {
     if (! StartServiceCtrlDispatcher(table)) {
       unsigned long error = GetLastError();
       /* User probably ran nssm with no argument */
-      if (error == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) exit(usage(1));
+      if (error == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) nssm_exit(usage(1));
       log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_DISPATCHER_FAILED, error_string(error), 0);
-      free_imports();
-      exit(100);
+      nssm_exit(100);
     }
   }
-  else exit(usage(1));
+  else nssm_exit(usage(1));
 
   /* And nothing more to do */
-  exit(0);
+  nssm_exit(0);
 }

@@ -68,6 +68,12 @@ Since version 2.22, NSSM can manage existing services.
 
 Since version 2.25, NSSM can execute commands in response to service events.
 
+Since version 2.25, NSSM can list services it manages.
+
+Since version 2.25, NSSM can dump the configuration of services it manages.
+
+Since version 2.25, NSSM can show the processes managed by a service.
+
 
 Usage
 -----
@@ -365,6 +371,21 @@ error-prone than simply redirecting the I/O streams before launching the
 application.  Therefore online rotation is not enabled by default.
 
 
+Timestamping output
+-------------------
+When redirecting output, NSSM can prefix each line of output with a
+millisecond-precision timestamp, for example:
+
+    2016-09-06 10:17:09.451 Pipeline main started
+
+To enable timestamp prefixing, set AppTimestampLog to a non-zero value.
+
+The prefix applies to both stdout and stderr.  Prefixing requires
+intercepting the application's I/O in the same way that online rotation
+does.  If log rotation and timestamp prefixing are both enabled, the
+rotation will be online.
+
+
 Environment variables
 ---------------------
 NSSM can replace or append to the managed application's environment.  Two
@@ -551,6 +572,10 @@ resumes from standby by setting AppEvents\Power\Resume to:
 
     %NSSM_EXE% restart %NSSM_SERVICE_NAME%
 
+To set a hook on the command line, use
+
+    nssm set <servicename> AppEvents <event>/<action> <command>
+
 Note that NSSM will abort the startup of the application if a Start/Pre hook
 returns exit code of 99.
 
@@ -570,6 +595,12 @@ If the application crashes and is restarted by NSSM, the order might be:
   Start/Post
   Stop/Pre
   Exit/Post
+
+
+If NSSM is redirecting stdout or stderr it can be configured to redirect
+the output of any hooks it runs.  Set AppRedirectHooks to 1 to enable
+that functionality.  A hook can of course redirect its own I/O independently
+of NSSM.
 
 
 Managing services using the GUI
@@ -630,9 +661,10 @@ would have the same effect.
 
 Non-standard parameters
 -----------------------
-The AppEnvironment and AppEnvironmentExtra parameters recognise an
-additional argument when querying the environment.  The following syntax
-will print all extra environment variables configured for a service
+The AppEnvironment, AppEnvironmentExtra and Environment parameters
+recognise an additional argument when querying the environment.  The
+following syntax will print all extra environment variables configured
+for a service
 
     nssm get <servicename> AppEnvironmentExtra
 
@@ -646,6 +678,39 @@ When setting an environment block, each variable should be specified as a
 KEY=VALUE pair in separate command line arguments.  For example:
 
     nssm set <servicename> AppEnvironment CLASSPATH=C:\Classes TEMP=C:\Temp
+
+Alternatively the KEY can be prefixed with a + or - symbol to respectively
+add or remove a pair from the block.
+
+The following two lines set CLASSPATH and TEMP:
+
+    nssm set <servicename> AppEnvironment CLASSPATH=C:\Classes
+    nssm set <servicename> AppEnvironment +TEMP=C:\Temp
+
+If the key is already present, specifying +KEY will override the value
+while preserving the order of keys:
+
+    nssm set <servicename> AppEnvironment +CLASSPATH=C:\NewClasses
+
+The following syntax removes a single variable from the block while
+leaving any other variables in place.
+
+    nssm set <servicename> AppEnvironment -TEMP
+
+Specifying -KEY=VALUE will remove the variable only if the existing
+value matches.
+
+The following syntax would not remove TEMP=C:\Temp
+
+    nssm set <servicename> AppEnvironment -TEMP=C:\Work\Temporary
+
+The + and - symbols are valid characters in environment variables.
+The syntax :KEY=VALUE is equivalent to KEY=VALUE and can be used to
+set variables which start with +/- or to explicitly reset the block in
+a script:
+
+    nssm set <servicename> AppEnvironment :CLASSPATH=C:\Classes
+    nssm set <servicename> AppEnvironment +TEMP=C:\Temp
 
 
 The AppExit parameter requires an additional argument specifying the exit
@@ -687,6 +752,34 @@ separate command line arguments.  For example:
 
     nssm set <servicename> DependOnService RpcSs LanmanWorkstation
 
+Alternatively the dependency name can be prefixed with a + or - symbol to
+respectively add or remove a dependency.
+
+The following two lines set dependencies on RpcSs and LanmanWorkstation:
+
+    nssm set <servicename> DependOnService RpcSs
+    nssm set <servicename> DependOnService +LanmanWorkstation
+
+The follwing syntax removes the dependency on RpcSs:
+
+    nssm set <servicename> DependOnService -RpcSs
+
+Service groups should, strictly speaking, be prefixed with the + symbol.
+To specify a single dependency on a group, the + symbol can be prefixed
+with the : symbol.
+
+The following lines are equivalent, and each set a dependency ONLY on
+NetBIOSGroup:
+
+    nssm set <servicename> DependOnGroup NetBIOSGroup
+    nssm set <servicename> DependOnGroup :NetBIOSGroup
+    nssm set <servicename> DependOnGroup :+NetBIOSGroup
+
+Whereas these lines add to any existing dependencies:
+
+    nssm set <servicename> DependOnGroup +NetBIOSGroup
+    nssm set <servicename> DependOnGroup ++NetBIOSGroup
+
 
 The Name parameter can only be queried, not set.  It returns the service's
 registry key name.  This may be useful to know if you take advantage of
@@ -716,6 +809,7 @@ parameter can be omitted when using them:
   "LocalSystem" aka "System" aka "NT Authority\System"
   "LocalService" aka "Local Service" aka "NT Authority\Local Service"
   "NetworkService" aka "Network Service" aka "NT Authority\Network Service"
+  Virtual service account "NT Service\<servicename>"
 
 
 The Start parameter is used to query or set the startup type of the service.
@@ -758,6 +852,20 @@ NSSM offers rudimentary service control features.
 
     nssm status <servicename>
 
+    nssm statuscode <servicename>
+
+The output of "nssm status" and "nssm statuscode" is a string
+representing the service state, eg SERVICE_RUNNING.
+
+The exit code of "nssm status" will be 0 if the status was
+succesfully retrieved.  If the exit code is not zero there was
+an error.
+
+The exit code of "nssm statuscode" will be the numeric value
+of the service state, eg 4 for SERVICE_RUNNING.  Zero is not a
+valid service state code.  If the exit code is zero there was
+an error.
+
 
 Removing services using the GUI
 -------------------------------
@@ -788,6 +896,50 @@ Because of the way NSSM registers itself you should be aware that you may not
 be able to replace the NSSM binary if you have the event viewer open and that
 running multiple instances of NSSM from different locations may be confusing if
 they are not all the same version.
+
+
+Listing managed services
+------------------------
+The following command will print the names of all services managed by NSSM:
+
+    nssm list
+
+To see all services on the system, not just NSSM's, use list all:
+
+    nssm list all
+
+
+Showing processes started by a service
+--------------------------------------
+The following command will print the process ID and executable path of
+processes started by a given service:
+
+    nssm processes <servicename>
+
+Note that if 32-bit NSSM is run on a 64-bit system running an older version of
+Windows than Vista it will not be able to query the paths of 64-bit processes.
+
+
+Exporting service configuration
+-------------------------------
+NSSM can dump commands which would recreate the configuration of a service.
+The output can be pasted into a batch script to back up the service or
+transfer to another computer.
+
+    nssm dump <servicename>
+
+Because the service configuration may contain characters which need to be
+quoted or escaped from the command prompt, NSSM tries hard to produce
+output which will work correctly when run as a script, by adding quotes
+and caret escapes as appropriate.
+
+To facilitate copying a service, the dump command accepts a second
+argument which specifies the name of the service to be used in the output.
+
+    nssm dump <servicename> <newname>
+
+Lines in the dump will reference the <newname> service while showing the
+configuration of <servicename>.
 
 
 Example usage
@@ -880,6 +1032,19 @@ Thanks to Gerald Haider for noticing that installing a service with NSSM in a
 path containing spaces was technically a security vulnerability.
 Thanks to Scott Ware for reporting a crash saving the environment on XP 32-bit.
 Thanks to Stefan and Michael Scherer for reporting a bug writing the event messages source.
+Thanks to Paul Baxter for help with Visual Studio 2015.
+Thanks to Mathias Breiner for help with Visual Studio and some registry fixes.
+Thanks to David Bremner for general tidyups.
+Thanks to Nabil Redmann for suggesting redirecting hooks' output.
+Thanks to Bader Aldurai for suggesting the process tree.
+Thanks to Christian Long for suggesting virtual accounts.
+Thanks to Marcin Lewandowski for spotting a bug appending to large files.
+Thanks to Nicolas Ducrocq for suggesting timestamping redirected output.
+Thanks to Meang Akira Tanaka for suggestion and initial implementation of
+the statuscode command.
+Thanks to Kirill Kovalenko for reporting a crash with NANO server.
+Thanks to Connor Reynolds for spotting a potential buffer overflow.
+Thanks to foi for spotting a hang with 64 cores.
 
 Licence
 -------

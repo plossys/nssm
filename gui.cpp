@@ -1,9 +1,10 @@
 #include "nssm.h"
 
-static enum { NSSM_TAB_APPLICATION, NSSM_TAB_DETAILS, NSSM_TAB_LOGON, NSSM_TAB_DEPENDENCIES, NSSM_TAB_PROCESS, NSSM_TAB_SHUTDOWN, NSSM_TAB_EXIT, NSSM_TAB_IO, NSSM_TAB_ROTATION, NSSM_TAB_ENVIRONMENT, NSSM_TAB_HOOKS, NSSM_NUM_TABS };
+extern const TCHAR *hook_event_strings[];
+extern const TCHAR *hook_action_strings[];
+
+static enum { NSSM_TAB_APPLICATION, NSSM_TAB_DETAILS, NSSM_TAB_LOGON, NSSM_TAB_DEPENDENCIES, NSSM_TAB_PROCESS, NSSM_TAB_SHUTDOWN, NSSM_TAB_EXIT, NSSM_TAB_IO, NSSM_TAB_ROTATION, NSSM_TAB_ENVIRONMENT, NSSM_TAB_HOOKS, NSSM_NUM_TABS } nssm_tabs;
 static HWND tablist[NSSM_NUM_TABS];
-static const TCHAR *hook_event_strings[] = { NSSM_HOOK_EVENT_START, NSSM_HOOK_EVENT_STOP, NSSM_HOOK_EVENT_EXIT, NSSM_HOOK_EVENT_POWER, NSSM_HOOK_EVENT_ROTATE, NULL };
-static const TCHAR *hook_action_strings[] = { NSSM_HOOK_ACTION_PRE, NSSM_HOOK_ACTION_POST, NSSM_HOOK_ACTION_CHANGE, NSSM_HOOK_ACTION_RESUME, NULL };
 static int selected_tab;
 
 static HWND dialog(const TCHAR *templ, HWND parent, DLGPROC function, LPARAM l) {
@@ -23,6 +24,13 @@ static HWND dialog(const TCHAR *templ, HWND parent, DLGPROC function, LPARAM l) 
 
 static HWND dialog(const TCHAR *templ, HWND parent, DLGPROC function) {
   return dialog(templ, parent, function, 0);
+}
+
+static inline void set_logon_enabled(unsigned char interact_enabled, unsigned char credentials_enabled) {
+  EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_INTERACT), interact_enabled);
+  EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_USERNAME), credentials_enabled);
+  EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_PASSWORD1), credentials_enabled);
+  EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_PASSWORD2), credentials_enabled);
 }
 
 int nssm_gui(int resource, nssm_service_t *service) {
@@ -85,15 +93,18 @@ int nssm_gui(int resource, nssm_service_t *service) {
 
     /* Log on tab. */
     if (service->username) {
-      CheckRadioButton(tablist[NSSM_TAB_LOGON], IDC_LOCALSYSTEM, IDC_ACCOUNT, IDC_ACCOUNT);
-      SetDlgItemText(tablist[NSSM_TAB_LOGON], IDC_USERNAME, service->username);
-      EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_INTERACT), 0);
-      EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_USERNAME), 1);
-      EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_PASSWORD1), 1);
-      EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_PASSWORD2), 1);
+      if (is_virtual_account(service->name, service->username)) {
+        CheckRadioButton(tablist[NSSM_TAB_LOGON], IDC_LOCALSYSTEM, IDC_VIRTUAL_SERVICE, IDC_VIRTUAL_SERVICE);
+        set_logon_enabled(0, 0);
+      }
+      else {
+        CheckRadioButton(tablist[NSSM_TAB_LOGON], IDC_LOCALSYSTEM, IDC_VIRTUAL_SERVICE, IDC_ACCOUNT);
+        SetDlgItemText(tablist[NSSM_TAB_LOGON], IDC_USERNAME, service->username);
+        set_logon_enabled(0, 1);
+      }
     }
     else {
-      CheckRadioButton(tablist[NSSM_TAB_LOGON], IDC_LOCALSYSTEM, IDC_ACCOUNT, IDC_LOCALSYSTEM);
+      CheckRadioButton(tablist[NSSM_TAB_LOGON], IDC_LOCALSYSTEM, IDC_VIRTUAL_SERVICE, IDC_LOCALSYSTEM);
       if (service->type & SERVICE_INTERACTIVE_PROCESS) SendDlgItemMessage(tablist[NSSM_TAB_LOGON], IDC_INTERACT, BM_SETCHECK, BST_CHECKED, 0);
     }
 
@@ -169,6 +180,7 @@ int nssm_gui(int resource, nssm_service_t *service) {
     SetDlgItemText(tablist[NSSM_TAB_IO], IDC_STDIN, service->stdin_path);
     SetDlgItemText(tablist[NSSM_TAB_IO], IDC_STDOUT, service->stdout_path);
     SetDlgItemText(tablist[NSSM_TAB_IO], IDC_STDERR, service->stderr_path);
+    if (service->timestamp_log) SendDlgItemMessage(tablist[NSSM_TAB_IO], IDC_TIMESTAMP, BM_SETCHECK, BST_CHECKED, 0);
 
     /* Rotation tab. */
     if (service->stdout_disposition == CREATE_ALWAYS) SendDlgItemMessage(tablist[NSSM_TAB_ROTATION], IDC_TRUNCATE, BM_SETCHECK, BST_CHECKED, 0);
@@ -181,6 +193,9 @@ int nssm_gui(int resource, nssm_service_t *service) {
     if (service->rotate_stdout_online || service->rotate_stderr_online) SendDlgItemMessage(tablist[NSSM_TAB_ROTATION], IDC_ROTATE_ONLINE, BM_SETCHECK, BST_CHECKED, 0);
     SetDlgItemInt(tablist[NSSM_TAB_ROTATION], IDC_ROTATE_SECONDS, service->rotate_seconds, 0);
     if (! service->rotate_bytes_high) SetDlgItemInt(tablist[NSSM_TAB_ROTATION], IDC_ROTATE_BYTES_LOW, service->rotate_bytes_low, 0);
+
+    /* Hooks tab. */
+    if (service->hook_share_output_handles) SendDlgItemMessage(tablist[NSSM_TAB_HOOKS], IDC_REDIRECT_HOOK, BM_SETCHECK, BST_CHECKED, 0);
 
     /* Check if advanced settings are in use. */
     if (service->stdout_disposition != service->stderr_disposition || (service->stdout_disposition && service->stdout_disposition != NSSM_STDOUT_DISPOSITION && service->stdout_disposition != CREATE_ALWAYS) || (service->stderr_disposition && service->stderr_disposition != NSSM_STDERR_DISPOSITION && service->stderr_disposition != CREATE_ALWAYS)) popup_message(dlg, MB_OK | MB_ICONWARNING, NSSM_GUI_WARN_STDIO);
@@ -264,13 +279,6 @@ static inline void set_timeout_enabled(unsigned long control, unsigned long depe
   EnableWindow(GetDlgItem(tablist[NSSM_TAB_SHUTDOWN], dependent), enabled);
 }
 
-static inline void set_logon_enabled(unsigned char enabled) {
-  EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_INTERACT), ! enabled);
-  EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_USERNAME), enabled);
-  EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_PASSWORD1), enabled);
-  EnableWindow(GetDlgItem(tablist[NSSM_TAB_LOGON], IDC_PASSWORD2), enabled);
-}
-
 static inline void set_affinity_enabled(unsigned char enabled) {
   EnableWindow(GetDlgItem(tablist[NSSM_TAB_PROCESS], IDC_AFFINITY), enabled);
 }
@@ -347,7 +355,7 @@ static inline void set_hook_tab(int event_index, int action_index, bool changed)
     SetEnvironmentVariable(hook_name, cmd);
   }
   else {
-    GetEnvironmentVariable(hook_name, cmd, _countof(cmd));
+    if (! GetEnvironmentVariable(hook_name, cmd, _countof(cmd))) cmd[0] = _T('\0');
     SetDlgItemText(tablist[NSSM_TAB_HOOKS], IDC_HOOK, cmd);
   }
 }
@@ -450,9 +458,20 @@ int configure(HWND window, nssm_service_t *service, nssm_service_t *orig_service
     service->username = 0;
     service->usernamelen = 0;
     if (service->password) {
-      SecureZeroMemory(service->password, service->passwordlen);
+      SecureZeroMemory(service->password, service->passwordlen * sizeof(TCHAR));
       HeapFree(GetProcessHeap(), 0, service->password);
     }
+    service->password = 0;
+    service->passwordlen = 0;
+  }
+  else if (SendDlgItemMessage(tablist[NSSM_TAB_LOGON], IDC_VIRTUAL_SERVICE, BM_GETCHECK, 0, 0) & BST_CHECKED) {
+    if (service->username) HeapFree(GetProcessHeap(), 0, service->username);
+    service->username = virtual_account(service->name);
+    if (! service->username) {
+      popup_message(window, MB_OK | MB_ICONEXCLAMATION, NSSM_EVENT_OUT_OF_MEMORY, _T("account name"), _T("install()"));
+      return 6;
+    }
+    service->usernamelen = _tcslen(service->username) + 1;
     service->password = 0;
     service->passwordlen = 0;
   }
@@ -539,7 +558,7 @@ int configure(HWND window, nssm_service_t *service, nssm_service_t *orig_service
         /* Get first password. */
         if (! GetDlgItemText(tablist[NSSM_TAB_LOGON], IDC_PASSWORD1, service->password, (int) service->passwordlen)) {
           HeapFree(GetProcessHeap(), 0, password);
-          SecureZeroMemory(service->password, service->passwordlen);
+          SecureZeroMemory(service->password, service->passwordlen * sizeof(TCHAR));
           HeapFree(GetProcessHeap(), 0, service->password);
           service->password = 0;
           service->passwordlen = 0;
@@ -552,9 +571,9 @@ int configure(HWND window, nssm_service_t *service, nssm_service_t *orig_service
 
         /* Get confirmation. */
         if (! GetDlgItemText(tablist[NSSM_TAB_LOGON], IDC_PASSWORD2, password, (int) service->passwordlen)) {
-          SecureZeroMemory(password, service->passwordlen);
+          SecureZeroMemory(password, service->passwordlen * sizeof(TCHAR));
           HeapFree(GetProcessHeap(), 0, password);
-          SecureZeroMemory(service->password, service->passwordlen);
+          SecureZeroMemory(service->password, service->passwordlen * sizeof(TCHAR));
           HeapFree(GetProcessHeap(), 0, service->password);
           service->password = 0;
           service->passwordlen = 0;
@@ -568,9 +587,9 @@ int configure(HWND window, nssm_service_t *service, nssm_service_t *orig_service
         /* Compare. */
         if (_tcsncmp(password, service->password, service->passwordlen)) {
           popup_message(window, MB_OK | MB_ICONEXCLAMATION, NSSM_GUI_MISSING_PASSWORD);
-          SecureZeroMemory(password, service->passwordlen);
+          SecureZeroMemory(password, service->passwordlen * sizeof(TCHAR));
           HeapFree(GetProcessHeap(), 0, password);
-          SecureZeroMemory(service->password, service->passwordlen);
+          SecureZeroMemory(service->password, service->passwordlen * sizeof(TCHAR));
           HeapFree(GetProcessHeap(), 0, service->password);
           service->password = 0;
           service->passwordlen = 0;
@@ -658,6 +677,8 @@ int configure(HWND window, nssm_service_t *service, nssm_service_t *orig_service
   check_io(window, _T("stdin"), service->stdin_path, _countof(service->stdin_path), IDC_STDIN);
   check_io(window, _T("stdout"), service->stdout_path, _countof(service->stdout_path), IDC_STDOUT);
   check_io(window, _T("stderr"), service->stderr_path, _countof(service->stderr_path), IDC_STDERR);
+  if (SendDlgItemMessage(tablist[NSSM_TAB_IO], IDC_TIMESTAMP, BM_GETCHECK, 0, 0) & BST_CHECKED) service->timestamp_log = true;
+  else service->timestamp_log = false;
 
   /* Override stdout and/or stderr. */
   if (SendDlgItemMessage(tablist[NSSM_TAB_ROTATION], IDC_TRUNCATE, BM_GETCHECK, 0, 0) & BST_CHECKED) {
@@ -672,6 +693,9 @@ int configure(HWND window, nssm_service_t *service, nssm_service_t *orig_service
     check_number(tablist[NSSM_TAB_ROTATION], IDC_ROTATE_SECONDS, &service->rotate_seconds);
     check_number(tablist[NSSM_TAB_ROTATION], IDC_ROTATE_BYTES_LOW, &service->rotate_bytes_low);
   }
+
+  /* Get hook stuff. */
+  if (SendDlgItemMessage(tablist[NSSM_TAB_HOOKS], IDC_REDIRECT_HOOK, BM_GETCHECK, 0, 0) & BST_CHECKED) service->hook_share_output_handles = true;
 
   /* Get environment. */
   unsigned long envlen = (unsigned long) SendMessage(GetDlgItem(tablist[NSSM_TAB_ENVIRONMENT], IDC_ENVIRONMENT), WM_GETTEXTLENGTH, 0, 0);
@@ -808,8 +832,8 @@ int remove(HWND window) {
 
     case 3:
       popup_message(window, MB_OK | MB_ICONEXCLAMATION, NSSM_GUI_SERVICE_NOT_INSTALLED);
-      return 3;
       cleanup_nssm_service(service);
+      return 3;
 
     case 4:
       popup_message(window, MB_OK | MB_ICONEXCLAMATION, NSSM_GUI_REMOVE_SERVICE_FAILED);
@@ -900,7 +924,7 @@ void browse(HWND window, TCHAR *current, unsigned long flags, ...) {
     va_start(arg, flags);
     while (i = va_arg(arg, int)) {
       TCHAR *localised = message_string(i);
-      _sntprintf_s((TCHAR *) ofn.lpstrFilter + len, bufsize, _TRUNCATE, localised);
+      _sntprintf_s((TCHAR *) ofn.lpstrFilter + len, bufsize - len, _TRUNCATE, localised);
       len += _tcslen(localised) + 1;
       LocalFree(localised);
       TCHAR *filter = browse_filter(i);
@@ -969,11 +993,15 @@ INT_PTR CALLBACK tab_dlg(HWND tab, UINT message, WPARAM w, LPARAM l) {
 
         /* Log on. */
         case IDC_LOCALSYSTEM:
-          set_logon_enabled(0);
+          set_logon_enabled(1, 0);
+          break;
+
+        case IDC_VIRTUAL_SERVICE:
+          set_logon_enabled(0, 0);
           break;
 
         case IDC_ACCOUNT:
-          set_logon_enabled(1);
+          set_logon_enabled(0, 1);
           break;
 
         /* Affinity. */
@@ -1120,7 +1148,7 @@ INT_PTR CALLBACK nssm_dlg(HWND window, UINT message, WPARAM w, LPARAM l) {
 
       /* Set defaults. */
       CheckRadioButton(tablist[NSSM_TAB_LOGON], IDC_LOCALSYSTEM, IDC_ACCOUNT, IDC_LOCALSYSTEM);
-      set_logon_enabled(0);
+      set_logon_enabled(1, 0);
 
       /* Dependencies tab. */
       tab.pszText = message_string(NSSM_GUI_TAB_DEPENDENCIES);
@@ -1223,6 +1251,9 @@ INT_PTR CALLBACK nssm_dlg(HWND window, UINT message, WPARAM w, LPARAM l) {
       tablist[NSSM_TAB_IO] = dialog(MAKEINTRESOURCE(IDD_IO), window, tab_dlg);
       ShowWindow(tablist[NSSM_TAB_IO], SW_HIDE);
 
+      /* Set defaults. */
+      SendDlgItemMessage(tablist[NSSM_TAB_IO], IDC_TIMESTAMP, BM_SETCHECK, BST_UNCHECKED, 0);
+
       /* Rotation tab. */
       tab.pszText = message_string(NSSM_GUI_TAB_ROTATION);
       tab.cchTextMax = (int) _tcslen(tab.pszText) + 1;
@@ -1257,6 +1288,7 @@ INT_PTR CALLBACK nssm_dlg(HWND window, UINT message, WPARAM w, LPARAM l) {
       SendMessage(combo, CB_INSERTSTRING, -1, (LPARAM) message_string(NSSM_GUI_HOOK_EVENT_EXIT));
       SendMessage(combo, CB_INSERTSTRING, -1, (LPARAM) message_string(NSSM_GUI_HOOK_EVENT_POWER));
       SendMessage(combo, CB_INSERTSTRING, -1, (LPARAM) message_string(NSSM_GUI_HOOK_EVENT_ROTATE));
+      SendDlgItemMessage(tablist[NSSM_TAB_HOOKS], IDC_REDIRECT_HOOK, BM_SETCHECK, BST_UNCHECKED, 0);
       if (_tcslen(service->name)) {
         TCHAR hook_name[HOOK_NAME_LENGTH];
         TCHAR cmd[CMD_LENGTH];

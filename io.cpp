@@ -3,8 +3,29 @@
 #define COMPLAINED_READ (1 << 0)
 #define COMPLAINED_WRITE (1 << 1)
 #define COMPLAINED_ROTATE (1 << 2)
+#define TIMESTAMP_FORMAT "%04u-%02u-%02u %02u:%02u:%02u.%03u: "
+#define TIMESTAMP_LEN 25
 
-static HANDLE create_logging_thread(TCHAR *service_name, TCHAR *path, unsigned long sharing, unsigned long disposition, unsigned long flags, HANDLE *read_handle_ptr, HANDLE *pipe_handle_ptr, HANDLE *write_handle_ptr, unsigned long rotate_bytes_low, unsigned long rotate_bytes_high, unsigned long rotate_delay, unsigned long *tid_ptr, unsigned long *rotate_online, bool copy_and_truncate) {
+static int dup_handle(HANDLE source_handle, HANDLE *dest_handle_ptr, TCHAR *source_description, TCHAR *dest_description, unsigned long flags) {
+  if (! dest_handle_ptr) return 1;
+
+  if (! DuplicateHandle(GetCurrentProcess(), source_handle, GetCurrentProcess(), dest_handle_ptr, 0, true, flags)) {
+    log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_DUPLICATEHANDLE_FAILED, source_description, dest_description, error_string(GetLastError()), 0);
+    return 2;
+  }
+  return 0;
+}
+
+static int dup_handle(HANDLE source_handle, HANDLE *dest_handle_ptr, TCHAR *source_description, TCHAR *dest_description) {
+  return dup_handle(source_handle, dest_handle_ptr, source_description, dest_description, DUPLICATE_SAME_ACCESS);
+}
+
+/*
+  read_handle:  read from application
+  pipe_handle:  stdout of application
+  write_handle: to file
+*/
+static HANDLE create_logging_thread(TCHAR *service_name, TCHAR *path, unsigned long sharing, unsigned long disposition, unsigned long flags, HANDLE *read_handle_ptr, HANDLE *pipe_handle_ptr, HANDLE *write_handle_ptr, unsigned long rotate_bytes_low, unsigned long rotate_bytes_high, unsigned long rotate_delay, unsigned long *tid_ptr, unsigned long *rotate_online, bool timestamp_log, bool copy_and_truncate) {
   *tid_ptr = 0;
 
   /* Pipe between application's stdout/stderr and our logging handle. */
@@ -39,6 +60,8 @@ static HANDLE create_logging_thread(TCHAR *service_name, TCHAR *path, unsigned l
   logger->write_handle = *write_handle_ptr;
   logger->size = (__int64) size.QuadPart;
   logger->tid_ptr = tid_ptr;
+  logger->timestamp_log = timestamp_log;
+  logger->line_length = 0;
   logger->rotate_online = rotate_online;
   logger->rotate_delay = rotate_delay;
   logger->copy_and_truncate = copy_and_truncate;
@@ -64,6 +87,19 @@ static inline void write_bom(logger_t *logger, unsigned long *out) {
   }
 }
 
+void close_handle(HANDLE *handle, HANDLE *remember) {
+  if (remember) *remember = INVALID_HANDLE_VALUE;
+  if (! handle) return;
+  if (! *handle) return;
+  CloseHandle(*handle);
+  if (remember) *remember = *handle;
+  *handle = 0;
+}
+
+void close_handle(HANDLE *handle) {
+  close_handle(handle, NULL);
+}
+
 /* Get path, share mode, creation disposition and flags for a stream. */
 int get_createfile_parameters(HKEY key, TCHAR *prefix, TCHAR *path, unsigned long *sharing, unsigned long default_sharing, unsigned long *disposition, unsigned long default_disposition, unsigned long *flags, unsigned long default_flags, bool *copy_and_truncate) {
   TCHAR value[NSSM_STDIO_LENGTH];
@@ -86,7 +122,7 @@ int get_createfile_parameters(HKEY key, TCHAR *prefix, TCHAR *path, unsigned lon
   switch (get_number(key, value, sharing, false)) {
     case 0: *sharing = default_sharing; break; /* Missing. */
     case 1: break; /* Found. */
-    case -2: return 4; break; /* Error. */
+    case -2: return 4; /* Error. */
   }
 
   /* CreationDisposition. */
@@ -97,7 +133,7 @@ int get_createfile_parameters(HKEY key, TCHAR *prefix, TCHAR *path, unsigned lon
   switch (get_number(key, value, disposition, false)) {
     case 0: *disposition = default_disposition; break; /* Missing. */
     case 1: break; /* Found. */
-    case -2: return 6; break; /* Error. */
+    case -2: return 6; /* Error. */
   }
 
   /* Flags. */
@@ -108,7 +144,7 @@ int get_createfile_parameters(HKEY key, TCHAR *prefix, TCHAR *path, unsigned lon
   switch (get_number(key, value, flags, false)) {
     case 0: *flags = default_flags; break; /* Missing. */
     case 1: break; /* Found. */
-    case -2: return 8; break; /* Error. */
+    case -2: return 8; /* Error. */
   }
 
   /* Rotate with CopyFile() and SetEndOfFile(). */
@@ -124,7 +160,7 @@ int get_createfile_parameters(HKEY key, TCHAR *prefix, TCHAR *path, unsigned lon
         if (data) *copy_and_truncate = true;
         else *copy_and_truncate = false;
         break;
-      case -2: return 9; break; /* Error. */
+      case -2: return 9; /* Error. */
     }
   }
 
@@ -155,9 +191,10 @@ int delete_createfile_parameter(HKEY key, TCHAR *prefix, TCHAR *suffix) {
 }
 
 HANDLE write_to_file(TCHAR *path, unsigned long sharing, SECURITY_ATTRIBUTES *attributes, unsigned long disposition, unsigned long flags) {
+  static LARGE_INTEGER offset = { 0 };
   HANDLE ret = CreateFile(path, FILE_WRITE_DATA, sharing, attributes, disposition, flags, 0);
-  if (ret) {
-    if (SetFilePointer(ret, 0, 0, FILE_END) != INVALID_SET_FILE_POINTER) SetEndOfFile(ret);
+  if (ret != INVALID_HANDLE_VALUE) {
+    if (SetFilePointerEx(ret, offset, 0, FILE_END)) SetEndOfFile(ret);
     return ret;
   }
 
@@ -192,7 +229,7 @@ void rotate_file(TCHAR *service_name, TCHAR *path, unsigned long seconds, unsign
 
   /* Try to open the file to check if it exists and to get attributes. */
   HANDLE file = CreateFile(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-  if (file) {
+  if (file != INVALID_HANDLE_VALUE) {
     /* Get file attributes. */
     if (! GetFileInformationByHandle(file, &info)) {
       /* Reuse current time for rotation timestamp. */
@@ -268,6 +305,7 @@ void rotate_file(TCHAR *service_name, TCHAR *path, unsigned long seconds, unsign
 
 int get_output_handles(nssm_service_t *service, STARTUPINFO *si) {
   if (! si) return 1;
+  bool inherit_handles = false;
 
   /* Allocate a new console so we get a fresh stdin, stdout and stderr. */
   alloc_console(service);
@@ -275,35 +313,39 @@ int get_output_handles(nssm_service_t *service, STARTUPINFO *si) {
   /* stdin */
   if (service->stdin_path[0]) {
     si->hStdInput = CreateFile(service->stdin_path, FILE_READ_DATA, service->stdin_sharing, 0, service->stdin_disposition, service->stdin_flags, 0);
-    if (! si->hStdInput) {
+    if (si->hStdInput == INVALID_HANDLE_VALUE) {
       log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_CREATEFILE_FAILED, service->stdin_path, error_string(GetLastError()), 0);
       return 2;
     }
+
+    inherit_handles = true;
   }
 
   /* stdout */
   if (service->stdout_path[0]) {
     if (service->rotate_files) rotate_file(service->name, service->stdout_path, service->rotate_seconds, service->rotate_bytes_low, service->rotate_bytes_high, service->rotate_delay, service->stdout_copy_and_truncate);
     HANDLE stdout_handle = write_to_file(service->stdout_path, service->stdout_sharing, 0, service->stdout_disposition, service->stdout_flags);
-    if (! stdout_handle) return 4;
+    if (stdout_handle == INVALID_HANDLE_VALUE) return 4;
+    service->stdout_si = 0;
 
-    if (service->rotate_files && service->rotate_stdout_online) {
+    if (service->use_stdout_pipe) {
       service->stdout_pipe = si->hStdOutput = 0;
-      service->stdout_thread = create_logging_thread(service->name, service->stdout_path, service->stdout_sharing, service->stdout_disposition, service->stdout_flags, &service->stdout_pipe, &si->hStdOutput, &stdout_handle, service->rotate_bytes_low, service->rotate_bytes_high, service->rotate_delay, &service->stdout_tid, &service->rotate_stdout_online, service->stdout_copy_and_truncate);
+      service->stdout_thread = create_logging_thread(service->name, service->stdout_path, service->stdout_sharing, service->stdout_disposition, service->stdout_flags, &service->stdout_pipe, &service->stdout_si, &stdout_handle, service->rotate_bytes_low, service->rotate_bytes_high, service->rotate_delay, &service->stdout_tid, &service->rotate_stdout_online, service->timestamp_log, service->stdout_copy_and_truncate);
       if (! service->stdout_thread) {
         CloseHandle(service->stdout_pipe);
-        CloseHandle(si->hStdOutput);
+        CloseHandle(service->stdout_si);
       }
     }
     else service->stdout_thread = 0;
 
     if (! service->stdout_thread) {
-      if (! DuplicateHandle(GetCurrentProcess(), stdout_handle, GetCurrentProcess(), &si->hStdOutput, 0, true, DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS)) {
-        log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_DUPLICATEHANDLE_FAILED, NSSM_REG_STDOUT, _T("stdout"), error_string(GetLastError()), 0);
-        return 4;
-      }
+      if (dup_handle(stdout_handle, &service->stdout_si, NSSM_REG_STDOUT, _T("stdout"), DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS)) return 4;
       service->rotate_stdout_online = NSSM_ROTATE_OFFLINE;
     }
+
+    if (dup_handle(service->stdout_si, &si->hStdOutput, _T("stdout_si"), _T("stdout"))) close_handle(&service->stdout_thread);
+
+    inherit_handles = true;
   }
 
   /* stderr */
@@ -316,62 +358,63 @@ int get_output_handles(nssm_service_t *service, STARTUPINFO *si) {
       service->rotate_stderr_online = NSSM_ROTATE_OFFLINE;
 
       /* Two handles to the same file will create a race. */
-      if (! DuplicateHandle(GetCurrentProcess(), si->hStdOutput, GetCurrentProcess(), &si->hStdError, 0, true, DUPLICATE_SAME_ACCESS)) {
-        log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_DUPLICATEHANDLE_FAILED, NSSM_REG_STDOUT, _T("stderr"), error_string(GetLastError()), 0);
-        return 6;
-      }
+      /* XXX: Here we assume that either both or neither handle must be a pipe. */
+      if (dup_handle(service->stdout_si, &service->stderr_si, _T("stdout"), _T("stderr"))) return 6;
     }
     else {
       if (service->rotate_files) rotate_file(service->name, service->stderr_path, service->rotate_seconds, service->rotate_bytes_low, service->rotate_bytes_high, service->rotate_delay, service->stderr_copy_and_truncate);
       HANDLE stderr_handle = write_to_file(service->stderr_path, service->stderr_sharing, 0, service->stderr_disposition, service->stderr_flags);
-      if (! stderr_handle) return 7;
+      if (stderr_handle == INVALID_HANDLE_VALUE) return 7;
+      service->stderr_si = 0;
 
-      if (service->rotate_files && service->rotate_stderr_online) {
+      if (service->use_stderr_pipe) {
         service->stderr_pipe = si->hStdError = 0;
-        service->stderr_thread = create_logging_thread(service->name, service->stderr_path, service->stderr_sharing, service->stderr_disposition, service->stderr_flags, &service->stderr_pipe, &si->hStdError, &stderr_handle, service->rotate_bytes_low, service->rotate_bytes_high, service->rotate_delay, &service->stderr_tid, &service->rotate_stderr_online, service->stderr_copy_and_truncate);
+        service->stderr_thread = create_logging_thread(service->name, service->stderr_path, service->stderr_sharing, service->stderr_disposition, service->stderr_flags, &service->stderr_pipe, &service->stderr_si, &stderr_handle, service->rotate_bytes_low, service->rotate_bytes_high, service->rotate_delay, &service->stderr_tid, &service->rotate_stderr_online, service->timestamp_log, service->stderr_copy_and_truncate);
         if (! service->stderr_thread) {
           CloseHandle(service->stderr_pipe);
-          CloseHandle(si->hStdError);
+          CloseHandle(service->stderr_si);
         }
       }
       else service->stderr_thread = 0;
 
       if (! service->stderr_thread) {
-        if (! DuplicateHandle(GetCurrentProcess(), stderr_handle, GetCurrentProcess(), &si->hStdError, 0, true, DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS)) {
-          log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_DUPLICATEHANDLE_FAILED, NSSM_REG_STDERR, _T("stderr"), error_string(GetLastError()), 0);
-          return 7;
-        }
+        if (dup_handle(stderr_handle, &service->stderr_si, NSSM_REG_STDERR, _T("stderr"), DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS)) return 7;
         service->rotate_stderr_online = NSSM_ROTATE_OFFLINE;
       }
     }
+
+    if (dup_handle(service->stderr_si, &si->hStdError, _T("stderr_si"), _T("stderr"))) close_handle(&service->stderr_thread);
+
+    inherit_handles = true;
   }
 
   /*
     We need to set the startup_info flags to make the new handles
     inheritable by the new process.
   */
-  si->dwFlags |= STARTF_USESTDHANDLES;
+  if (inherit_handles) si->dwFlags |= STARTF_USESTDHANDLES;
 
-  if (service->no_console) return 0;
+  return 0;
+}
 
-  /* Redirect other handles. */
-  if (! si->hStdInput) {
-    if (! DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_INPUT_HANDLE), GetCurrentProcess(), &si->hStdInput, 0, true, DUPLICATE_SAME_ACCESS)) {
-      log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_DUPLICATEHANDLE_FAILED, _T("STD_INPUT_HANDLE"), _T("stdin"), error_string(GetLastError()), 0);
-      return 8;
-    }
+/* Reuse output handles for a hook. */
+int use_output_handles(nssm_service_t *service, STARTUPINFO *si) {
+  si->dwFlags &= ~STARTF_USESTDHANDLES;
+
+  if (service->stdout_si) {
+    if (dup_handle(service->stdout_si, &si->hStdOutput, _T("stdout_pipe"), _T("hStdOutput"))) return 1;
+    si->dwFlags |= STARTF_USESTDHANDLES;
   }
-  if (! si->hStdOutput) {
-    if (! DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_OUTPUT_HANDLE), GetCurrentProcess(), &si->hStdOutput, 0, true, DUPLICATE_SAME_ACCESS)) {
-      log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_DUPLICATEHANDLE_FAILED, _T("STD_OUTPUT_HANDLE"), _T("stdout"), error_string(GetLastError()), 0);
-      return 9;
+
+  if (service->stderr_si) {
+    if (dup_handle(service->stderr_si, &si->hStdError, _T("stderr_pipe"), _T("hStdError"))) {
+      if (si->hStdOutput) {
+        si->dwFlags &= ~STARTF_USESTDHANDLES;
+        CloseHandle(si->hStdOutput);
+      }
+      return 2;
     }
-  }
-  if (! si->hStdError)  {
-    if (! DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_ERROR_HANDLE), GetCurrentProcess(), &si->hStdError, 0, true, DUPLICATE_SAME_ACCESS)) {
-      log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_DUPLICATEHANDLE_FAILED, _T("STD_ERROR_HANDLE"), _T("stderr"), error_string(GetLastError()), 0);
-      return 10;
-    }
+    si->dwFlags |= STARTF_USESTDHANDLES;
   }
 
   return 0;
@@ -381,6 +424,24 @@ void close_output_handles(STARTUPINFO *si) {
   if (si->hStdInput) CloseHandle(si->hStdInput);
   if (si->hStdOutput) CloseHandle(si->hStdOutput);
   if (si->hStdError) CloseHandle(si->hStdError);
+}
+
+void cleanup_loggers(nssm_service_t *service) {
+  unsigned long interval = NSSM_CLEANUP_LOGGERS_DEADLINE;
+  HANDLE thread_handle = INVALID_HANDLE_VALUE;
+
+  close_handle(&service->stdout_thread, &thread_handle);
+  /* Close write end of the data pipe so logging thread can finalise read. */
+  close_handle(&service->stdout_si);
+  /* Await logging thread then close read end. */
+  if (thread_handle != INVALID_HANDLE_VALUE) WaitForSingleObject(thread_handle, interval);
+  close_handle(&service->stdout_pipe);
+
+  thread_handle = INVALID_HANDLE_VALUE;
+  close_handle(&service->stderr_thread, &thread_handle);
+  close_handle(&service->stderr_si);
+  if (thread_handle != INVALID_HANDLE_VALUE) WaitForSingleObject(thread_handle, interval);
+  close_handle(&service->stderr_pipe);
 }
 
 /*
@@ -470,6 +531,69 @@ complain_write:
   return ret;
 }
 
+/* Note that the timestamp is created in UTF-8. */
+static inline int write_timestamp(logger_t *logger, unsigned long charsize, unsigned long *out, int *complained) {
+  char timestamp[TIMESTAMP_LEN + 1];
+
+  SYSTEMTIME now;
+  GetSystemTime(&now);
+  _snprintf_s(timestamp, _countof(timestamp), _TRUNCATE, TIMESTAMP_FORMAT, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
+
+  if (charsize == sizeof(char)) return try_write(logger, (void *) timestamp, TIMESTAMP_LEN, out, complained);
+
+  wchar_t *utf16;
+  unsigned long utf16len;
+  if (to_utf16(timestamp, &utf16, &utf16len)) return -1;
+  int ret = try_write(logger, (void *) *utf16, utf16len * sizeof(wchar_t), out, complained);
+  HeapFree(GetProcessHeap(), 0, utf16);
+  return ret;
+}
+
+static int write_with_timestamp(logger_t *logger, void *address, unsigned long bufsize, unsigned long *out, int *complained, unsigned long charsize) {
+  if (logger->timestamp_log) {
+    unsigned long log_out;
+    int log_complained;
+    unsigned long timestamp_out = 0;
+    int timestamp_complained;
+    if (! logger->line_length) {
+      write_timestamp(logger, charsize, &timestamp_out, &timestamp_complained);
+      logger->line_length += (__int64) timestamp_out;
+      *out += timestamp_out;
+      *complained |= timestamp_complained;
+    }
+
+    unsigned long i;
+    void *line = address;
+    unsigned long offset = 0;
+    int ret;
+    for (i = 0; i < bufsize; i++) {
+      if (((char *) address)[i] == '\n') {
+        ret = try_write(logger, line, i - offset + 1, &log_out, &log_complained);
+        line = (void *) ((char *) line + i - offset + 1);
+        logger->line_length = 0LL;
+        *out += log_out;
+        *complained |= log_complained;
+        offset = i + 1;
+        if (offset < bufsize) {
+          write_timestamp(logger, charsize, &timestamp_out, &timestamp_complained);
+          logger->line_length += (__int64) timestamp_out;
+          *out += timestamp_out;
+          *complained |= timestamp_complained;
+        }
+      }
+    }
+
+    if (offset < bufsize) {
+      ret = try_write(logger, line, bufsize - offset, &log_out, &log_complained);
+      *out += log_out;
+      *complained |= log_complained;
+    }
+
+    return ret;
+  }
+  else return try_write(logger, address, bufsize, out, complained);
+}
+
 /* Wrapper to be called in a new thread for logging. */
 unsigned long WINAPI log_and_rotate(void *arg) {
   logger_t *logger = (logger_t *) arg;
@@ -500,8 +624,8 @@ unsigned long WINAPI log_and_rotate(void *arg) {
     address = &buffer;
     ret = try_read(logger, address, sizeof(buffer), &in, &complained);
     if (ret < 0) {
-      CloseHandle(logger->read_handle);
-      CloseHandle(logger->write_handle);
+      close_handle(&logger->read_handle);
+      close_handle(&logger->write_handle);
       HeapFree(GetProcessHeap(), 0, logger);
       return 2;
     }
@@ -518,8 +642,8 @@ unsigned long WINAPI log_and_rotate(void *arg) {
           /* Write up to the newline. */
           ret = try_write(logger, address, i, &out, &complained);
           if (ret < 0) {
-            CloseHandle(logger->read_handle);
-            CloseHandle(logger->write_handle);
+            close_handle(&logger->read_handle);
+            close_handle(&logger->write_handle);
             HeapFree(GetProcessHeap(), 0, logger);
             return 3;
           }
@@ -536,7 +660,7 @@ unsigned long WINAPI log_and_rotate(void *arg) {
             risk losing everything.
           */
           if (logger->copy_and_truncate) FlushFileBuffers(logger->write_handle);
-          CloseHandle(logger->write_handle);
+          close_handle(&logger->write_handle);
           bool ok = true;
           TCHAR *function;
           if (logger->copy_and_truncate) {
@@ -570,12 +694,12 @@ unsigned long WINAPI log_and_rotate(void *arg) {
 
           /* Reopen. */
           logger->write_handle = write_to_file(logger->path, logger->sharing, 0, logger->disposition, logger->flags);
-          if (! logger->write_handle) {
+          if (logger->write_handle == INVALID_HANDLE_VALUE) {
             error = GetLastError();
             log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_CREATEFILE_FAILED, logger->path, error_string(error), 0);
             /* Oh dear.  Now we can't log anything further. */
-            CloseHandle(logger->read_handle);
-            CloseHandle(logger->write_handle);
+            close_handle(&logger->read_handle);
+            close_handle(&logger->write_handle);
             HeapFree(GetProcessHeap(), 0, logger);
             return 4;
           }
@@ -587,9 +711,9 @@ unsigned long WINAPI log_and_rotate(void *arg) {
       }
     }
 
+    if (! size || logger->timestamp_log) if (! charsize) charsize = guess_charsize(address, in);
     if (! size) {
       /* Write a BOM to the new file. */
-      if (! charsize) charsize = guess_charsize(address, in);
       if (charsize == sizeof(wchar_t)) write_bom(logger, &out);
       size += (__int64) out;
     }
@@ -597,18 +721,18 @@ unsigned long WINAPI log_and_rotate(void *arg) {
     /* Write the data, if any. */
     if (! in) continue;
 
-    ret = try_write(logger, address, in, &out, &complained);
+    ret = write_with_timestamp(logger, address, in, &out, &complained, charsize);
     size += (__int64) out;
     if (ret < 0) {
-      CloseHandle(logger->read_handle);
-      CloseHandle(logger->write_handle);
+      close_handle(&logger->read_handle);
+      close_handle(&logger->write_handle);
       HeapFree(GetProcessHeap(), 0, logger);
       return 3;
     }
   }
 
-  CloseHandle(logger->read_handle);
-  CloseHandle(logger->write_handle);
+  close_handle(&logger->read_handle);
+  close_handle(&logger->write_handle);
   HeapFree(GetProcessHeap(), 0, logger);
   return 0;
 }

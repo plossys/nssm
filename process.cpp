@@ -2,6 +2,47 @@
 
 extern imports_t imports;
 
+HANDLE get_debug_token() {
+  long error;
+  HANDLE token;
+  if (! OpenThreadToken(GetCurrentThread(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, false, &token)) {
+    error = GetLastError();
+    if (error == ERROR_NO_TOKEN) {
+      (void) ImpersonateSelf(SecurityImpersonation);
+      (void) OpenThreadToken(GetCurrentThread(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, false, &token);
+    }
+  }
+  if (! token) return INVALID_HANDLE_VALUE;
+
+  TOKEN_PRIVILEGES privileges, old;
+  unsigned long size = sizeof(TOKEN_PRIVILEGES);
+  LUID luid;
+  if (! LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &luid)) {
+    CloseHandle(token);
+    return INVALID_HANDLE_VALUE;
+  }
+
+  privileges.PrivilegeCount = 1;
+  privileges.Privileges[0].Luid = luid;
+  privileges.Privileges[0].Attributes = 0;
+
+  if (! AdjustTokenPrivileges(token, false, &privileges, size, &old, &size)) {
+    CloseHandle(token);
+    return INVALID_HANDLE_VALUE;
+  }
+
+  old.PrivilegeCount = 1;
+  old.Privileges[0].Luid = luid;
+  old.Privileges[0].Attributes |= SE_PRIVILEGE_ENABLED;
+
+  if (! AdjustTokenPrivileges(token, false, &old, size, NULL, NULL)) {
+    CloseHandle(token);
+    return INVALID_HANDLE_VALUE;
+  }
+
+  return token;
+}
+
 void service_kill_t(nssm_service_t *service, kill_t *k) {
   if (! service) return;
   if (! k) return;
@@ -115,7 +156,7 @@ int kill_threads(nssm_service_t *service, kill_t *k) {
 
   /* Get a snapshot of all threads in the system. */
   HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-  if (! snapshot) {
+  if (snapshot == INVALID_HANDLE_VALUE) {
     log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_CREATETOOLHELP32SNAPSHOT_THREAD_FAILED, k->name, error_string(GetLastError()), 0);
     return 0;
   }
@@ -241,7 +282,8 @@ int kill_console(nssm_service_t *service, kill_t *k) {
 
   /* Ignore the event ourselves. */
   ret = 0;
-  if (! SetConsoleCtrlHandler(0, TRUE)) {
+  BOOL ignored = SetConsoleCtrlHandler(0, TRUE);
+  if (! ignored) {
     log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_SETCONSOLECTRLHANDLER_FAILED, k->name, error_string(GetLastError()), 0);
     ret = 4;
   }
@@ -262,6 +304,11 @@ int kill_console(nssm_service_t *service, kill_t *k) {
   /* Wait for process to exit. */
   if (await_single_handle(k->status_handle, k->status, k->process_handle, k->name, _T(__FUNCTION__), k->kill_console_delay)) ret = 6;
 
+  /* Remove our handler. */
+  if (ignored && ! SetConsoleCtrlHandler(0, FALSE)) {
+    log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_SETCONSOLECTRLHANDLER_FAILED, k->name, error_string(GetLastError()), 0);
+  }
+
   return ret;
 }
 
@@ -269,16 +316,17 @@ int kill_console(kill_t *k) {
   return kill_console(NULL, k);
 }
 
-void kill_process_tree(nssm_service_t * service, kill_t *k, unsigned long ppid) {
+void walk_process_tree(nssm_service_t *service, walk_function_t fn, kill_t *k, unsigned long ppid) {
   if (! k) return;
   /* Shouldn't happen unless the service failed to start. */
   if (! k->pid) return; /* XXX: needed? */
   unsigned long pid = k->pid;
+  unsigned long depth = k->depth;
 
   TCHAR pid_string[16], code[16];
   _sntprintf_s(pid_string, _countof(pid_string), _TRUNCATE, _T("%lu"), pid);
   _sntprintf_s(code, _countof(code), _TRUNCATE, _T("%lu"), k->exitcode);
-  log_event(EVENTLOG_INFORMATION_TYPE, NSSM_EVENT_KILLING, k->name, pid_string, code, 0);
+  if (fn == kill_process) log_event(EVENTLOG_INFORMATION_TYPE, NSSM_EVENT_KILLING, k->name, pid_string, code, 0);
 
   /* We will need a process handle in order to call TerminateProcess() later. */
   HANDLE process_handle = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_TERMINATE, false, pid);
@@ -286,9 +334,9 @@ void kill_process_tree(nssm_service_t * service, kill_t *k, unsigned long ppid) 
     /* Kill this process first, then its descendents. */
     TCHAR ppid_string[16];
     _sntprintf_s(ppid_string, _countof(ppid_string), _TRUNCATE, _T("%lu"), ppid);
-    log_event(EVENTLOG_INFORMATION_TYPE, NSSM_EVENT_KILL_PROCESS_TREE, pid_string, ppid_string, k->name, 0);
+    if (fn == kill_process) log_event(EVENTLOG_INFORMATION_TYPE, NSSM_EVENT_KILL_PROCESS_TREE, pid_string, ppid_string, k->name, 0);
     k->process_handle = process_handle; /* XXX: open directly? */
-    if (! kill_process(k)) {
+    if (! fn(service, k)) {
       /* Maybe it already died. */
       unsigned long ret;
       if (! GetExitCodeProcess(process_handle, &ret) || ret == STILL_ACTIVE) {
@@ -303,7 +351,7 @@ void kill_process_tree(nssm_service_t * service, kill_t *k, unsigned long ppid) 
 
   /* Get a snapshot of all processes in the system. */
   HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-  if (! snapshot) {
+  if (snapshot == INVALID_HANDLE_VALUE) {
     log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_CREATETOOLHELP32SNAPSHOT_PROCESS_FAILED, k->name, error_string(GetLastError()), 0);
     return;
   }
@@ -319,9 +367,10 @@ void kill_process_tree(nssm_service_t * service, kill_t *k, unsigned long ppid) 
   }
 
   /* This is a child of the doomed process so kill it. */
+  k->depth++;
   if (! check_parent(k, &pe, pid)) {
     k->pid = pe.th32ProcessID;
-    kill_process_tree(k, ppid);
+    walk_process_tree(service, fn, k, ppid);
   }
   k->pid = pid;
 
@@ -332,19 +381,55 @@ void kill_process_tree(nssm_service_t * service, kill_t *k, unsigned long ppid) 
       if (ret == ERROR_NO_MORE_FILES) break;
       log_event(EVENTLOG_ERROR_TYPE, NSSM_EVENT_PROCESS_ENUMERATE_FAILED, k->name, error_string(GetLastError()), 0);
       CloseHandle(snapshot);
+      k->depth = depth;
       return;
     }
 
     if (! check_parent(k, &pe, pid)) {
       k->pid = pe.th32ProcessID;
-      kill_process_tree(k, ppid);
+      walk_process_tree(service, fn, k, ppid);
     }
     k->pid = pid;
   }
+  k->depth = depth;
 
   CloseHandle(snapshot);
 }
 
 void kill_process_tree(kill_t *k, unsigned long ppid) {
-  return kill_process_tree(NULL, k, ppid);
+  return walk_process_tree(NULL, kill_process, k, ppid);
+}
+
+int print_process(nssm_service_t *service, kill_t *k) {
+  TCHAR exe[EXE_LENGTH];
+  TCHAR *buffer = 0;
+  if (k->depth) {
+    buffer = (TCHAR *) HeapAlloc(GetProcessHeap(), 0, (k->depth + 1) * sizeof(TCHAR));
+    if (buffer) {
+      unsigned long i;
+      for (i = 0; i < k->depth; i++) buffer[i] = _T(' ');
+      buffer[i] = _T('\0');
+    }
+  }
+
+  unsigned long size = _countof(exe);
+  if (! imports.QueryFullProcessImageName || ! imports.QueryFullProcessImageName(k->process_handle, 0, exe, &size)) {
+    /*
+      Fall back to GetModuleFileNameEx(), which won't work for WOW64 processes.
+    */
+    if (! GetModuleFileNameEx(k->process_handle, NULL, exe, _countof(exe))) {
+      long error = GetLastError();
+      if (error == ERROR_PARTIAL_COPY) _sntprintf_s(exe, _countof(exe), _TRUNCATE, _T("[WOW64]"));
+      else _sntprintf_s(exe, _countof(exe), _TRUNCATE, _T("???"));
+    }
+  }
+
+  _tprintf(_T("% 8lu %s%s\n"), k->pid, buffer ? buffer : _T(""), exe);
+
+  if (buffer) HeapFree(GetProcessHeap(), 0, buffer);
+  return 1;
+}
+
+int print_process(kill_t *k) {
+  return print_process(NULL, k);
 }
